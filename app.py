@@ -73,8 +73,11 @@ def preprocess_canvas(canvas_image):
     # RGB to Grayscale
     gray = cv2.cvtColor(canvas_image[:, :, :3], cv2.COLOR_RGB2GRAY)
     
+    # 색상 반전: 흰 배경 + 검은 글씨 → 검은 배경 + 흰 글씨
+    inverted = 255 - gray
+    
     # 28x28로 리사이즈
-    resized = cv2.resize(gray, (28, 28))
+    resized = cv2.resize(inverted, (28, 28))
     
     # 정규화
     normalized = resized.astype(np.float32) / 255.0
@@ -82,26 +85,29 @@ def preprocess_canvas(canvas_image):
     return normalized.reshape(1, -1)
 
 def quick_update(new_sample, true_label):
-    """1-2초 안에 업데이트"""
+    """1-2초 안에 더 안전한 업데이트"""
     start_time = time.time()
     
-    # 가장 가까운 50개 샘플 찾기
-    distances = np.sum((st.session_state.X - new_sample) ** 2, axis=1)
-    nearest_50 = np.argsort(distances)[:50]
+    # 새 샘플을 데이터에 추가
+    st.session_state.X = np.vstack([st.session_state.X, new_sample])
+    st.session_state.labels = np.append(st.session_state.labels, true_label)
     
-    # 이 중에서 unlabeled인 것들만 업데이트
-    for idx in nearest_50:
-        if st.session_state.labels[idx] == -1:
+    # 가장 가까운 10개만 찾아서 같은 라벨인지 확인
+    distances = np.sum((st.session_state.X[:-1] - new_sample) ** 2, axis=1)
+    nearest_10 = np.argsort(distances)[:10]
+    
+    # 매우 가까운 것들 중 unlabeled인 것만 조심스럽게 업데이트
+    for idx in nearest_10:
+        if st.session_state.labels[idx] == -1 and distances[idx] < 0.1:  # 임계값 추가
             st.session_state.labels[idx] = true_label
     
-    # 빠른 재학습 (일부만)
-    labeled_indices = np.where(st.session_state.labels != -1)[0]
-    if len(labeled_indices) > 100:
-        sample_indices = np.random.choice(labeled_indices, 100, replace=False)
-        st.session_state.label_prop.fit(
-            st.session_state.X[sample_indices], 
-            st.session_state.labels[sample_indices]
-        )
+    # 전체 재학습 (하지만 빠르게)
+    st.session_state.label_prop = LabelPropagation(
+        kernel='knn', 
+        n_neighbors=10,  # 더 적은 이웃
+        max_iter=30      # 더 적은 반복
+    )
+    st.session_state.label_prop.fit(st.session_state.X, st.session_state.labels)
     
     # 새 정확도 계산
     new_acc = accuracy_score(
@@ -195,9 +201,3 @@ else:
                 height=300
             )
             st.plotly_chart(fig, use_container_width=True)
-    
-    # 리셋 버튼
-    if st.sidebar.button("🔄 처음부터 다시"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
